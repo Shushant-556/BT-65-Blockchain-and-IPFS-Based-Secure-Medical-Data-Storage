@@ -1,0 +1,273 @@
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id            String   @id @default(cuid())
+  email         String   @unique
+  passwordHash  String
+  role          String   // PATIENT, DOCTOR, HOSPITAL, ADMIN
+  isActive      Boolean  @default(true)
+  walletAddress String?  @unique
+  publicKey     String?  // Base64 encoded public key for encryption
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  patientProfile  PatientProfile?
+  doctorProfile   DoctorProfile?
+  notifications   Notification[]
+  securityEvents  SecurityEvent[]
+  accessLogs      AccessLog[]     @relation("actor")
+  sessions        Session[]
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model PatientProfile {
+  id          String   @id @default(cuid())
+  userId      String   @unique
+  firstName   String
+  lastName    String
+  dateOfBirth String
+  gender      String
+  bloodGroup  String?
+  allergies   String?  // JSON stringified array
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user            User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  medicalRecords  MedicalRecord[]
+  consentGrants   ConsentGrant[]    @relation("patientGrants")
+  consentRequests ConsentRequest[]  @relation("patientRequests")
+}
+
+model DoctorProfile {
+  id              String   @id @default(cuid())
+  userId          String   @unique
+  firstName       String
+  lastName        String
+  specialization  String
+  licenseNumber   String   @unique
+  hospitalId      String?
+  isVerified      Boolean  @default(false)
+  credentialHash  String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  user            User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  hospital        Hospital?         @relation(fields: [hospitalId], references: [id])
+  consentGrants   ConsentGrant[]    @relation("doctorGrants")
+  consentRequests ConsentRequest[]  @relation("doctorRequests")
+}
+
+model Hospital {
+  id          String   @id @default(cuid())
+  name        String
+  address     String
+  city        String
+  state       String
+  licenseNo   String   @unique
+  isVerified  Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  doctors     DoctorProfile[]
+  records     MedicalRecord[]
+}
+
+model MedicalRecord {
+  id                 String   @id @default(cuid())
+  patientId          String
+  title              String
+  category           String   // LAB_REPORT, PRESCRIPTION, IMAGING, DISCHARGE, CLINICAL_NOTE, VACCINATION, HISTORY, OTHER
+  description        String?
+  fileName           String
+  fileSize           Int
+  mimeType           String
+  encryptedCid       String?  // IPFS / Local Encrypted Storage CID
+  contentHash        String   // SHA-256 fingerprint of encrypted file
+  metadataHash       String?  // SHA-256 fingerprint of record metadata
+  blockchainTxHash   String?
+  blockchainRecordId String?
+  isRegistered       Boolean  @default(false)
+  isVerified         Boolean?
+  hospitalId         String?
+  doctorName         String?
+  examinationDate    String?
+  tags               String?  // JSON array string
+  version            Int      @default(1)
+  isDeleted          Boolean  @default(false)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  patient         PatientProfile          @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  hospital        Hospital?               @relation(fields: [hospitalId], references: [id])
+  versions        MedicalRecordVersion[]
+  keyEnvelopes    EncryptedKeyEnvelope[]
+  accessLogs      AccessLog[]
+}
+
+model MedicalRecordVersion {
+  id               String   @id @default(cuid())
+  recordId         String
+  version          Int
+  encryptedCid     String
+  contentHash      String
+  blockchainTxHash String?
+  createdAt        DateTime @default(now())
+
+  record           MedicalRecord @relation(fields: [recordId], references: [id], onDelete: Cascade)
+}
+
+model EncryptedKeyEnvelope {
+  id            String   @id @default(cuid())
+  recordId      String
+  userId        String   // Recipient user id (patient or authorized doctor)
+  encryptedKey  String   // Wrapped DEK (Base64)
+  wrappingKeyId String   // Identifier for public/wrapping key used
+  algorithm     String   @default("AES-KW")
+  version       Int      @default(1)
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+
+  record        MedicalRecord @relation(fields: [recordId], references: [id], onDelete: Cascade)
+
+  @@unique([recordId, userId, version])
+}
+
+model ConsentRequest {
+  id          String   @id @default(cuid())
+  patientId   String
+  doctorId    String
+  reason      String
+  scope       String   // SELECTED_RECORDS, CATEGORY, ALL_CURRENT
+  recordIds   String?  // JSON array string
+  categories  String?  // JSON array string
+  duration    Int      // Duration in hours
+  status      String   @default("PENDING") // PENDING, APPROVED, DENIED, EXPIRED
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  patient     PatientProfile @relation("patientRequests", fields: [patientId], references: [id], onDelete: Cascade)
+  doctor      DoctorProfile  @relation("doctorRequests", fields: [doctorId], references: [id], onDelete: Cascade)
+}
+
+model ConsentGrant {
+  id               String   @id @default(cuid())
+  patientId        String
+  doctorId         String
+  scope            String   // SELECTED_RECORDS, CATEGORY, ALL_CURRENT
+  recordIds        String?  // JSON array string
+  categories       String?  // JSON array string
+  grantedAt        DateTime @default(now())
+  expiresAt        DateTime
+  revokedAt        DateTime?
+  isRevoked        Boolean  @default(false)
+  blockchainTxHash String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  patient        PatientProfile   @relation("patientGrants", fields: [patientId], references: [id], onDelete: Cascade)
+  doctor         DoctorProfile    @relation("doctorGrants", fields: [doctorId], references: [id], onDelete: Cascade)
+  consentHistory ConsentHistory[]
+}
+
+model ConsentHistory {
+  id          String   @id @default(cuid())
+  grantId     String
+  action      String   // GRANTED, REVOKED, EXPIRED, MODIFIED
+  performedBy String
+  details     String?
+  createdAt   DateTime @default(now())
+
+  grant       ConsentGrant @relation(fields: [grantId], references: [id], onDelete: Cascade)
+}
+
+model AccessLog {
+  id        String   @id @default(cuid())
+  actorId   String
+  recordId  String?
+  action    String   // VIEW, DOWNLOAD, VERIFY, UPLOAD, REVOKE, DELETE
+  resource  String
+  ipAddress String?
+  success   Boolean
+  details   String?
+  createdAt DateTime @default(now())
+
+  actor     User           @relation("actor", fields: [actorId], references: [id], onDelete: Cascade)
+  record    MedicalRecord? @relation(fields: [recordId], references: [id], onDelete: SetNull)
+}
+
+model AuditEvent {
+  id               String   @id @default(cuid())
+  eventType        String   // ACCESS, CONSENT_CHANGE, VERIFICATION, EMERGENCY_ACCESS, SECURITY
+  actorId          String?
+  subjectId        String?
+  resourceId       String?
+  action           String
+  details          String?  // JSON string
+  blockchainTxHash String?
+  severity         String   @default("INFO") // INFO, WARNING, CRITICAL
+  createdAt        DateTime @default(now())
+}
+
+model BlockchainTransaction {
+  id              String   @id @default(cuid())
+  txHash          String   @unique
+  contractAddress String
+  functionName    String
+  blockNumber     Int?
+  gasUsed         String?
+  status          String   // PENDING, CONFIRMED, FAILED
+  eventType       String?
+  relatedId       String?  // Non-sensitive application reference ID
+  createdAt       DateTime @default(now())
+  confirmedAt     DateTime?
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  type      String   // RECORD_UPLOADED, ACCESS_REQUEST, CONSENT_APPROVED, CONSENT_REVOKED, INTEGRITY_ALERT
+  title     String
+  message   String
+  isRead    Boolean  @default(false)
+  relatedId String?
+  createdAt DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model SecurityEvent {
+  id        String   @id @default(cuid())
+  userId    String?
+  eventType String   // LOGIN_FAILED, ACCOUNT_LOCKED, SUSPICIOUS_ACTIVITY, KEY_ROTATION, INTEGRITY_FAIL
+  severity  String   // LOW, MEDIUM, HIGH, CRITICAL
+  details   String?
+  ipAddress String?
+  resolved  Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+}
+
+model SystemHealth {
+  id        String   @id @default(cuid())
+  service   String   // DATABASE, IPFS, BLOCKCHAIN, STORAGE
+  status    String   // HEALTHY, DEGRADED, DOWN
+  latencyMs Int?
+  details   String?
+  checkedAt DateTime @default(now())
+}
